@@ -24,14 +24,19 @@ func build(ctx context.Context) error {
     }
     defer client.Close()
 
+    // create a cache volume
+    goCache := client.CacheVolume("go")
+
     // get reference to the local project
-    src := client.Host().Directory(".")
+    src := client.Host().Directory(".", dagger.HostDirectoryOpts{Exclude: []string{"$HOME/go/pkg/mod/", "ci/"}})
 
     // get `golang` image
     golang := client.Container().From("golang:latest")
 
     // mount cloned repository into `golang` image
-    golang = golang.WithMountedDirectory("/src", src).WithWorkdir("/src")
+    golang = golang.
+        WithMountedDirectory("/src", src).WithWorkdir("/src").
+        WithMountedCache("$HOME/go/pkg/mod", goCache)
 
     // define the application build command
     path := "build/"
