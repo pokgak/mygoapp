@@ -9,7 +9,7 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
-type Product struct {
+type ProductRequest struct {
 	ID          int    `json:"id"`
 	Name        string `json:"name" validate:"required"`
 	Description string `json:"description"`
@@ -24,7 +24,7 @@ func createProductHandler(w http.ResponseWriter, r *http.Request) {
 
 	decoder := json.NewDecoder(r.Body)
 
-	var product Product
+	var product ProductRequest
 	err := decoder.Decode(&product)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
