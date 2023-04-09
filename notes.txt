@@ -1,0 +1,20 @@
+Using Dagger on WSL
+
+- enable systemd
+- install docker-ce
+
+## Troubleshooting
+
+Error
+
+```
+sudo apt install libsecret-1-0
+```
+
+```
+GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.secrets was not provided by any .service files
+```
+
+```
+sudo apt install gnupg2 pass
+```
