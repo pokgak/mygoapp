@@ -1,32 +1,54 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
 
 	"github.com/gorilla/mux"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type Person struct {
+	ID   int64  `json:"id"`
 	Name string `json:"name"`
 	Age  int    `json:"age"`
 }
 
 var (
-	DATABASE_FILE = "database.json"
+	DATABASE_FILE string = "database.json"
+	db            *sql.DB
 )
 
 func main() {
+	var err error
+	
+	// initialize database	
+	db, err = sql.Open("sqlite3", "./data.db")
+	if err != nil {
+		log.Fatalln("Failed to open database file")
+	}
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS persons (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        age INTEGER
+    )`)
+	if err != nil {
+		log.Fatalln("Failed to initialize database", err)
+	}
+	defer db.Close()
+
+	// configure router
 	r := mux.NewRouter()
 
 	r.HandleFunc("/users", usersPostHandler).Methods(http.MethodPost)
 	r.HandleFunc("/users", usersGetHandler).Methods(http.MethodGet)
 
 	log.Println("Starting server on :8080")
-	err := http.ListenAndServe(":8080", r)
+	err = http.ListenAndServe(":8080", r)
 	if err != nil {
 		panic(err)
 	}
@@ -41,20 +63,13 @@ func usersPostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if the database file exists
-	_, err = os.Stat(DATABASE_FILE)
-	if os.IsNotExist(err) {
-		// If it doesn't exist, create it and write the object to it
-		writeJSONToFile([]Person{p})
-	} else {
-		// If it exists, read its contents, append the new object, and write it back to the file
-		persons, err := readJSONFromFile()
-		if err != nil {
-			log.Fatal(err)
-		}
-		persons = append(persons, p)
-		writeJSONToFile(persons)
+	id, err := addPerson(p, db)
+	if err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
 	}
+
+	p.ID = id
+	json.NewEncoder(w).Encode(p)
 }
 
 func usersGetHandler(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +81,7 @@ func usersGetHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	persons, err := readJSONFromFile()
+	persons, err := getPersons(db)
 	if err != nil {
 		http.Error(w, "Failed to read database file", http.StatusInternalServerError)
 		return
@@ -79,32 +94,52 @@ func usersGetHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func readJSONFromFile() ([]Person, error) {
-	var persons []Person
-	file, err := os.Open(DATABASE_FILE)
+func addPerson(person Person, db *sql.DB) (int64, error) {
+	stmt, err := db.Prepare("INSERT INTO persons(name, age) VALUES(?, ?)")
 	if err != nil {
-		return persons, err
+		return 0, err
 	}
-	defer file.Close()
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&persons)
+
+	defer stmt.Close()
+
+	result, err := stmt.Exec(person.Name, person.Age)
 	if err != nil {
-		return persons, err
+		return 0, err
 	}
-	return persons, nil
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+
+	person.ID = id
+
+	return id, nil
 }
 
-func writeJSONToFile(persons []Person) {
-	file, err := os.Create(DATABASE_FILE)
+func getPersons(db *sql.DB) ([]Person, error) {
+	rows, err := db.Query("SELECT id, name, age FROM persons")
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	defer file.Close()
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "    ")
-	err = encoder.Encode(persons)
-	if err != nil {
-		log.Fatal(err)
+
+	defer rows.Close()
+
+	var persons []Person
+
+	for rows.Next() {
+		var p Person
+		err := rows.Scan(&p.ID, &p.Name, &p.Age)
+		if err != nil {
+			return nil, err
+		}
+
+		persons = append(persons, p)
 	}
-	fmt.Println("Object added to database.json")
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return persons, nil
 }
