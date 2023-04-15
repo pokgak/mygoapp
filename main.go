@@ -74,6 +74,7 @@ func main() {
 
 	tp := trace.NewTracerProvider(
 		trace.WithBatcher(exp),
+		trace.WithResource(newResource()),
 	)
 	defer func() {
 		if err := tp.Shutdown(context.Background()); err != nil {
