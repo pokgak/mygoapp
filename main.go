@@ -1,13 +1,24 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/gorilla/mux"
 	_ "github.com/mattn/go-sqlite3"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/sdk/resource"
+	"go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
 )
 
 type Person struct {
@@ -21,10 +32,62 @@ var (
 	db            *sql.DB
 )
 
+const (
+	tracer = "mygoapp"
+)
+
+// newExporter returns a console exporter.
+func newExporter(w io.Writer) (trace.SpanExporter, error) {
+	return stdouttrace.New(
+		stdouttrace.WithWriter(w),
+		// Use human-readable output.
+		stdouttrace.WithPrettyPrint(),
+		// Do not print timestamps for the demo.
+		stdouttrace.WithoutTimestamps(),
+	)
+}
+
+// newResource returns a resource describing this application.
+func newResource() *resource.Resource {
+	r, _ := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceName("mygoapp"),
+			semconv.ServiceVersion("v0.1.0"),
+			attribute.String("environment", "demo"),
+		),
+	)
+	return r
+}
+
 func main() {
 	var err error
 
-	// initialize database	
+	// Write telemetry data to a file.
+	f, err := os.Create("traces.txt")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	exp, err := newExporter(f)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	tp := trace.NewTracerProvider(
+		trace.WithBatcher(exp),
+		trace.WithResource(newResource()),
+	)
+	defer func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			log.Fatal(err)
+		}
+	}()
+	otel.SetTracerProvider(tp)
+
+	// initialize database
 	db, err = sql.Open("sqlite3", "./data.db")
 	if err != nil {
 		log.Fatalln("Failed to open database file")
@@ -54,17 +117,24 @@ func main() {
 }
 
 func usersPostHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, span := otel.Tracer(tracer).Start(context.Background(), "usersPostHandler")
+	defer span.End()
+
 	var p Person
 
 	err := json.NewDecoder(r.Body).Decode(&p)
 	if err != nil {
-		http.Error(w, "There was an error decoding the request body into the struct", http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return
 	}
 
-	id, err := addPerson(p, db)
+	id, err := addPerson(ctx, p, db)
 	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 	}
 
 	p.ID = id
@@ -72,11 +142,18 @@ func usersPostHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func usersGetHandler(w http.ResponseWriter, r *http.Request) {
-	persons, err := getPersons(db)
+	ctx, span := otel.Tracer(tracer).Start(context.Background(), "usersGetHandler")
+	defer span.End()
+
+	persons, err := getPersons(ctx, db)
 	if err != nil {
-		http.Error(w, "Failed to read database file", http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return
 	}
+
+	span.SetAttributes(attribute.Int("users.count", len(persons)))
 
 	if len(persons) == 0 {
 		w.WriteHeader(http.StatusNoContent)
@@ -85,14 +162,22 @@ func usersGetHandler(w http.ResponseWriter, r *http.Request) {
 
 	err = json.NewEncoder(w).Encode(persons)
 	if err != nil {
-		http.Error(w, "There was an error encoding the request body into the struct", http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return
 	}
+
 }
 
-func addPerson(person Person, db *sql.DB) (int64, error) {
+func addPerson(ctx context.Context, person Person, db *sql.DB) (int64, error) {
+	_, span := otel.Tracer(tracer).Start(ctx, "addPerson")
+	defer span.End()
+
 	stmt, err := db.Prepare("INSERT INTO persons(name, age) VALUES(?, ?)")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, err
 	}
 
@@ -100,22 +185,33 @@ func addPerson(person Person, db *sql.DB) (int64, error) {
 
 	result, err := stmt.Exec(person.Name, person.Age)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, err
 	}
 
 	id, err := result.LastInsertId()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return 0, err
 	}
+
+	span.SetAttributes(attribute.Int64("user.id", id))
 
 	person.ID = id
 
 	return id, nil
 }
 
-func getPersons(db *sql.DB) ([]Person, error) {
+func getPersons(ctx context.Context, db *sql.DB) ([]Person, error) {
+	_, span := otel.Tracer(tracer).Start(ctx, "getPersons")
+	defer span.End()
+
 	rows, err := db.Query("SELECT id, name, age FROM persons")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
@@ -127,6 +223,8 @@ func getPersons(db *sql.DB) ([]Person, error) {
 		var p Person
 		err := rows.Scan(&p.ID, &p.Name, &p.Age)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, err
 		}
 
@@ -134,6 +232,8 @@ func getPersons(db *sql.DB) ([]Person, error) {
 	}
 
 	if err := rows.Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
