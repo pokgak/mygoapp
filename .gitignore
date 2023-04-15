@@ -26,3 +26,6 @@ build/
 # ignore database file
 database.json
 data.db
+
+# ignore traces file
+traces.txt
