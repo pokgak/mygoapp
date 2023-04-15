@@ -1,4 +1,4 @@
-module main
+module github.com/pokgak/mygoapp
 
 go 1.20
 
