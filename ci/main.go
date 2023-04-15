@@ -24,32 +24,29 @@ func build(ctx context.Context) error {
     }
     defer client.Close()
 
-    // create a cache volume
-    goCache := client.CacheVolume("go")
-
-    // get reference to the local project
-    src := client.Host().Directory(".", dagger.HostDirectoryOpts{Exclude: []string{"**/pkg/mod/**", "ci/"}})
-
-    // get `golang` image
-    golang := client.Container().From("golang:latest")
-
-    golang = golang.
-        WithEnvVariable("GOPATH", "/go")
+    deps := client.Host().Directory(".", dagger.HostDirectoryOpts{
+		Include: []string{
+			"./go.mod",
+			"./go.sum",
+		},
+	})
 
     // mount cloned repository into `golang` image
-    golang = golang.
-        WithMountedDirectory("/src", src).WithWorkdir("/src").
-        WithMountedCache("/go/pkg/mod", goCache)
-
-    // define the application build command
-    path := "build/"
-    golang = golang.WithExec([]string{"go", "build", "-o", path})
+    buildDir := "build/"
+    golang := client.Container().
+        From("golang:1.20").
+        WithWorkdir("/src").
+        WithMountedDirectory("/src", deps).
+        WithMountedCache("/go/pkg/mod", client.CacheVolume("go-mod-cache")).
+        WithExec([]string{"go", "mod", "download"}).
+        WithMountedDirectory("/src", client.Host().Directory(".")).
+        WithExec([]string{"go", "build", "-o", buildDir})
 
     // get reference to build output directory in container
-    output := golang.Directory(path)
+    output := golang.Directory(buildDir)
 
     // write contents of container build/ directory to the host
-    _, err = output.Export(ctx, path)
+    _, err = output.Export(ctx, buildDir)
     if err != nil {
         return err
     }
