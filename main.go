@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
 
 	"github.com/gorilla/mux"
 	_ "github.com/mattn/go-sqlite3"
@@ -24,7 +23,7 @@ var (
 
 func main() {
 	var err error
-	
+
 	// initialize database	
 	db, err = sql.Open("sqlite3", "./data.db")
 	if err != nil {
@@ -73,17 +72,14 @@ func usersPostHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func usersGetHandler(w http.ResponseWriter, r *http.Request) {
-	_, err := os.Stat(DATABASE_FILE)
-	if os.IsNotExist(err) {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
 	persons, err := getPersons(db)
 	if err != nil {
 		http.Error(w, "Failed to read database file", http.StatusInternalServerError)
+		return
+	}
+
+	if len(persons) == 0 {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
