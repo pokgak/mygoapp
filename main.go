@@ -3,67 +3,108 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 
 	"github.com/gorilla/mux"
-	"github.com/go-playground/validator/v10"
 )
 
-type ProductRequest struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name" validate:"required"`
-	Description string `json:"description"`
-	Price       int    `json:"price" validate:"required,min=0"`
+type Person struct {
+	Name string `json:"name"`
+	Age  int    `json:"age"`
 }
 
-func createProductHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	decoder := json.NewDecoder(r.Body)
-
-	var product ProductRequest
-	err := decoder.Decode(&product)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	fmt.Fprintf(w, "Received product data: %v\n", product)
-
-	validate := validator.New()
-	err = validate.Struct(product)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Save the product to the database or perform other actions here...
-
-	fmt.Fprintf(w, "Created product %s", product.Name)
-}
-
-func homeHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprint(w, "Welcome to the home page!")
-}
-
-func productHandler(w http.ResponseWriter, r *http.Request) {
-	productId := mux.Vars(r)["productId"]
-	fmt.Fprintf(w, "You requested product %s", productId)
-}
+var (
+	DATABASE_FILE = "database.json"
+)
 
 func main() {
 	r := mux.NewRouter()
 
-	r.HandleFunc("/", homeHandler)
-	r.HandleFunc("/products/{productId}", productHandler).Methods(http.MethodGet)
-	r.HandleFunc("/products", createProductHandler).Methods(http.MethodPost)
+	r.HandleFunc("/users", usersPostHandler).Methods(http.MethodPost)
+	r.HandleFunc("/users", usersGetHandler).Methods(http.MethodGet)
 
-	fmt.Println("Starting server on :8080")
+	log.Println("Starting server on :8080")
 	err := http.ListenAndServe(":8080", r)
 	if err != nil {
 		panic(err)
 	}
+}
+
+func usersPostHandler(w http.ResponseWriter, r *http.Request) {
+	var p Person
+
+	err := json.NewDecoder(r.Body).Decode(&p)
+	if err != nil {
+		http.Error(w, "There was an error decoding the request body into the struct", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if the database file exists
+	_, err = os.Stat(DATABASE_FILE)
+	if os.IsNotExist(err) {
+		// If it doesn't exist, create it and write the object to it
+		writeJSONToFile([]Person{p})
+	} else {
+		// If it exists, read its contents, append the new object, and write it back to the file
+		persons, err := readJSONFromFile()
+		if err != nil {
+			log.Fatal(err)
+		}
+		persons = append(persons, p)
+		writeJSONToFile(persons)
+	}
+}
+
+func usersGetHandler(w http.ResponseWriter, r *http.Request) {
+	_, err := os.Stat(DATABASE_FILE)
+	if os.IsNotExist(err) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	persons, err := readJSONFromFile()
+	if err != nil {
+		http.Error(w, "Failed to read database file", http.StatusInternalServerError)
+		return
+	}
+
+	err = json.NewEncoder(w).Encode(persons)
+	if err != nil {
+		http.Error(w, "There was an error encoding the request body into the struct", http.StatusInternalServerError)
+		return
+	}
+}
+
+func readJSONFromFile() ([]Person, error) {
+	var persons []Person
+	file, err := os.Open(DATABASE_FILE)
+	if err != nil {
+		return persons, err
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&persons)
+	if err != nil {
+		return persons, err
+	}
+	return persons, nil
+}
+
+func writeJSONToFile(persons []Person) {
+	file, err := os.Create(DATABASE_FILE)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "    ")
+	err = encoder.Encode(persons)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("Object added to database.json")
 }
